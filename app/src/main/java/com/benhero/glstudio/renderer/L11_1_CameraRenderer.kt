@@ -4,10 +4,14 @@ import android.content.Context
 import android.graphics.SurfaceTexture
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
+import android.util.Log
+import com.benhero.glstudio.R
 import com.benhero.glstudio.base.BaseRenderer
 import com.benhero.glstudio.camera.ICamera
 import com.benhero.glstudio.util.BufferUtil
+import com.benhero.glstudio.util.TextureHelper
 import com.benhero.glstudio.util.VertexRotationUtil
+import com.benhero.glstudio.watersign.*
 import java.nio.FloatBuffer
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
@@ -61,12 +65,22 @@ class L11_1_CameraRenderer(context: Context, private val camera: ICamera) : Base
     private var mVertexData: FloatBuffer
 
     private var aPositionLocation: Int = 0
+    private var aTexCoordLocation:Int = 0
     private var uTextureUnitLocation: Int = 0
     private val mTexVertexBuffer: FloatBuffer
     private var textureId: Int = 0
     private var surfaceTexture: SurfaceTexture? = null
     private var updateSurface = false
     private var isSwitchCamera = false
+
+    //水印
+    private var mWaterSign: WaterSignature? = null
+    private var mSignTexId = 0
+    //FBO
+    private var fbo: FrameBuffer? = null
+    private var mFBOFrameRect: FBOFrameRect? = null
+
+
 
     init {
         mVertexData = BufferUtil.createFloatBuffer(POINT_DATA)
@@ -78,10 +92,19 @@ class L11_1_CameraRenderer(context: Context, private val camera: ICamera) : Base
 
         aPositionLocation = getAttrib("a_Position")
         // 纹理坐标索引
-        val aTexCoordLocation = getAttrib("a_TexCoord")
+        aTexCoordLocation = getAttrib("a_TexCoord")
         uTextureUnitLocation = getUniform("u_TextureUnit")
         // 纹理数据
         createOESTextureId()
+        //水印
+        mWaterSign = WaterSignature()
+        mWaterSign?.setShaderProgram(WaterSignSProgram())
+        mSignTexId = TextureHelper.loadTexture(context, R.drawable.pikachu).textureId
+        //fbo
+        mFBOFrameRect = FBOFrameRect()
+        fbo = FrameBuffer()
+
+        mFBOFrameRect!!.setShaderProgram(WaterSignSProgram())
 
         mVertexData.position(0)
         GLES20.glVertexAttribPointer(aPositionLocation, POSITION_COMPONENT_COUNT,
@@ -124,26 +147,57 @@ class L11_1_CameraRenderer(context: Context, private val camera: ICamera) : Base
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
         super.onSurfaceChanged(gl, width, height)
         GLES20.glViewport(0, 0, width, height)
-        updateVertex()
+        //updateVertex()
+        fbo!!.setup(outputWidth, outputHeight)
+    }
+
+    private fun enableOESParams(){
+        mVertexData.position(0)
+        GLES20.glVertexAttribPointer(aPositionLocation, POSITION_COMPONENT_COUNT,
+            GLES20.GL_FLOAT, false, 0, mVertexData)
+        GLES20.glEnableVertexAttribArray(aPositionLocation)
+
+        // 加载纹理坐标
+        mTexVertexBuffer.position(0)
+        GLES20.glVertexAttribPointer(aTexCoordLocation, TEX_VERTEX_COMPONENT_COUNT, GLES20.GL_FLOAT, false, 0, mTexVertexBuffer)
+        GLES20.glEnableVertexAttribArray(aTexCoordLocation)
+    }
+    private fun disableOESParams(){
+        GLES20.glDisableVertexAttribArray(aPositionLocation)
+        GLES20.glDisableVertexAttribArray(aTexCoordLocation)
     }
 
     override fun onDrawFrame(glUnused: GL10) {
-        if (isSwitchCamera) {
-            isSwitchCamera = false
-            createOESTextureId()
-            updateVertex()
-        }
-        if (updateSurface) {
-            // 当有画面帧解析完毕时，驱动SurfaceTexture更新纹理ID到最近一帧解析完的画面，并且驱动底层去解析下一帧画面
-            surfaceTexture!!.updateTexImage()
-            updateSurface = false
-        }
+        //fbo start
+        fbo!!.begin()
 
         GLES20.glClear(GL10.GL_COLOR_BUFFER_BIT)
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glClearColor(0.0f, 0.0f, 0.0f, 1.0f)
+        GLES20.glViewport(0, 0, outputWidth, outputHeight)
+        surfaceTexture!!.updateTexImage()
+        //使用項目
+        GLES20.glUseProgram(program)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
+        //十分重要，必不可少
+        enableOESParams()
         GLES20.glUniform1i(uTextureUnitLocation, 0)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, POINT_DATA.size / POSITION_COMPONENT_COUNT)
+        //關掉
+        disableOESParams()
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+        GLES20.glUseProgram(0)
+        Log.e("Rye", "programe:$program")
+        //设置水印
+        GLES20.glViewport(0, 0, 288, 144)
+        mWaterSign?.drawFrame(mSignTexId)
+        GLES20.glViewport(0, 0, outputWidth, outputHeight)
+        //fbo over
+        fbo!!.end()
+        GLES20.glViewport(0, 0, outputWidth, outputHeight)
+        mFBOFrameRect!!.drawFrame(fbo!!.textureId)
     }
 
     /**
